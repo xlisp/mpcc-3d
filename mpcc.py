@@ -25,8 +25,8 @@ from collections import Counter
 
 # ======================= 参数 (单位 mm) =======================
 # --- 镜片 ---
-LA_D, LA_T = 41.5, 4.0     # 平凸镜 f=163 : 直径, 边缘厚度(请实测)
-LB_D, LB_T = 27.0, 3.0     # 负透镜 f=-185: 直径, 边缘厚度(请实测)
+LA_D, LA_T = 41.5, 3.4     # 平凸镜 f=163 : 直径, 边缘厚度 (由莴苣 P2/P3 推算约 3.4, 请实测)
+LB_D, LB_T = 27.0, 3.0     # 负透镜 f=-185: 直径, 边缘厚度 (莴苣 P2 镜座深 3.0, 请实测)
 LENS_CLR = 0.3             # 镜片座直径余量
 FA, FB = 163.0, -185.0
 N_GLASS = 1.5168           # K9 玻璃折射率, 仅用于计算凸面矢高
@@ -51,7 +51,8 @@ M48_MAJOR_D, M48_PITCH, M48_DEPTH = 47.7, 0.75, 0.45
 # --- 镜片座 ---
 SHOULDER_T = 2.0           # 平凸镜出光端挡肩厚度
 SHOULDER_AP_D = 37.0       # 挡肩通光孔 (平凸镜凸面从这里探出)
-B_OVERLAP = 0.6            # 负透镜单边被压住的宽度
+B_AP_RING_D = 26.4         # 压圈一侧负透镜通光孔径 (莴苣 P2 挡边 26.4)
+B_AP_SPACER_D = 25.5       # 隔圈一侧负透镜通光孔径 (莴苣 P3 内径 25.5)
 LIP_FAR_D = 30.0           # 隔圈内锥孔在平凸镜一侧的直径
 
 # --- 压圈 (M44x1) ---
@@ -187,7 +188,8 @@ R_PLAIN = R_IMAJ + 0.2             # 进光端光孔 (压圈要能通过)
 R_A_SEAT = (LA_D + LENS_CLR) / 2
 R_B_SEAT = (LB_D + LENS_CLR) / 2
 R_SP = R_A_SEAT - 0.2
-R_B_AP = LB_D / 2 - B_OVERLAP      # 负透镜被压住后的通光半径
+R_B_AP_RING = B_AP_RING_D / 2
+R_B_AP_SP = B_AP_SPACER_D / 2
 R_AP_A = SHOULDER_AP_D / 2
 RC_A = (N_GLASS - 1.0) * FA        # 平凸镜凸面曲率半径
 
@@ -248,7 +250,7 @@ def make_ring():
     r0 = 17.0
     nf = notched(r0, r0 + 2.6, 4, 8)
     I = [(0.0, nf), (2.0, nf), (2.0, const(r0)),
-         (RING_T - 0.6, const(R_B_AP)), (RING_T, const(R_B_AP))]
+         (RING_T - 0.6, const(R_B_AP_RING)), (RING_T, const(R_B_AP_RING))]
     return O, I
 
 
@@ -257,7 +259,7 @@ def make_spacer(gap):
     S = sp_len(gap)
     O = [(0.0, const(R_SP)), (S, const(R_SP))]
     I = [(0.0, const(LIP_FAR_D / 2)),
-         (gap, const(R_B_AP)),             # 内锥孔: 平凸镜侧宽, 负透镜侧窄
+         (gap, const(R_B_AP_SP)),          # 内锥孔: 平凸镜侧宽, 负透镜侧窄
          (gap, const(R_B_SEAT)),           # 负透镜座
          (S, const(R_B_SEAT))]
     return O, I
@@ -307,14 +309,9 @@ def main():
     print("M48 台阶面(转接环拧到底的位置) -> 感光面 应为 %.1f mm" % to_shoulder)
     print("  = 相机法兰距 %.1f + 延长筒/转接环 %.1f mm  (法兰距请按你的相机改 CAM_FLANGE)" %
           (CAM_FLANGE, to_shoulder - CAM_FLANGE))
-    sagdiff = GAP_CENTER - GAP_EDGE
-    rb = LB_D / 2
-    rneg = (N_GLASS - 1) * abs(FB)
-    print("\n--- 数据一致性提示 ---")
-    print("帖子里中心-边缘间距差 %.2f mm; 若负透镜是平凹 f=-185, 凹面在 r=%.1f 处矢高仅约 %.2f mm" %
-          (sagdiff, rb, sag(rneg, rb)))
-    print("两者差距较大: 请与帖子网盘资料或你的镜片实测核对后再定稿 (隔圈已提供 ±0.5mm 备选)")
-
+    print("\n--- 说明 ---")
+    print("镜片件号 356 / 482 与莴苣装配图一致; 356 为负弯月形, 所以中心-边缘间距差 %.2f mm 合理" % (GAP_CENTER - GAP_EDGE))
+    print("LA_T=%.1f 由莴苣 P2/P3 推算 (8.78-5.337), LB_T=%.1f 来自其 P2 镜座深度; 都请用卡尺实测" % (LA_T, LB_T))
 
 if __name__ == "__main__":
     main()
