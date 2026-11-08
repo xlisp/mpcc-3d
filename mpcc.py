@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MPCC 彗差改正镜 3D 打印件生成器 (纯 Python, 无第三方依赖, 输出二进制 STL)
+MPCC 彗差改正镜 3D 打印件生成器 v2 (纯 Python, 无第三方依赖, 输出二进制 STL)
 
-用于: 信达老黑 10 寸牛反 F5
-光路 (从进光口到出光口):  2" 插入筒 -> 压圈 -> 平凸镜(A) -> 隔圈 -> 负透镜(B) -> M48 / 2" 出口
-装配: 镜片都从进光口(2"插入筒这一端)装入, 先放 B, 再放隔圈, 再放 A, 最后拧压圈。
+v2 按牧夫天文网 莴苣 的 DIY 1X MPCC (帖子 thread-811154) 公布的数据重做:
+  * 光路顺序: 进光口 -> 负透镜(27mm) -> 平凸镜(41.5mm, 平面朝负透镜, 凸面朝相机) -> 相机
+  * 两镜间距: 中心 7.754mm / 边缘 5.337mm  (隔圈边缘厚度 5.337)
+  * 后截距 50.5mm: 平凸镜凸面顶点 -> 相机感光面
+  本项目只是按该数据为 "2寸插入筒进 + M48 出" 做镜筒, 并非莴苣的原文件。
 
 零件:
-  body.stl            主体: 2" 插入筒 + 止口法兰 + 出口(M48x0.75 外螺纹)
-  ring.stl            压圈 (M44x1 外螺纹, 进光面有 4 个缺口方便拧)
-  spacer_XX.stl       不同长度的隔圈 (用来调两镜间距, 实测找最佳)
-  coupon_m44_int.stl  M44 内螺纹试配小块 (配 ring 试螺纹松紧)
-  coupon_m48_ext.stl  M48 外螺纹试配小块 (配你的 M48 接口试松紧)
+  body.stl            主体: 2" 插入筒 + 法兰 + M48x0.75 外螺纹出口 + 平凸镜座
+  spacer_gap*.stl     隔圈 (内含负透镜座), 名字里的数字 = 两镜边缘间距 mm
+  ring.stl            M44x1 压圈
+  coupon_*.stl        螺纹试配块
 
-!! 请用卡尺实测镜片"边缘厚度", 改下面 LA_T / LB_T 再运行 !!
+装配 (镜片都从进光口装入, 依次): 平凸镜(凸面朝出光口) -> 隔圈 -> 负透镜(放进隔圈的座里) -> 压圈
+!! 请用卡尺实测镜片"边缘厚度", 改 LA_T / LB_T 再运行 !!
 """
 import math
 import os
@@ -26,31 +28,37 @@ from collections import Counter
 LA_D, LA_T = 41.5, 4.0     # 平凸镜 f=163 : 直径, 边缘厚度(请实测)
 LB_D, LB_T = 27.0, 3.0     # 负透镜 f=-185: 直径, 边缘厚度(请实测)
 LENS_CLR = 0.3             # 镜片座直径余量
-FA, FB = 163.0, -185.0     # 焦距, 仅用于近轴估算表
+FA, FB = 163.0, -185.0
+N_GLASS = 1.5168           # K9 玻璃折射率, 仅用于计算凸面矢高
+
+# --- 莴苣帖子数据 ---
+GAP_EDGE, GAP_CENTER = 5.337, 7.754     # 两镜边缘/中心间距
+BACK_FOCUS = 50.5                       # 平凸镜凸面顶点 -> 感光面
+GAP_VARIANTS = [GAP_EDGE - 0.5, GAP_EDGE, GAP_EDGE + 0.5]   # 多打两个隔圈供微调
+CAM_FLANGE = 17.5          # 相机法兰距, 这里是帖子里 ASI533 的数值, 请改成你的相机
 
 # --- 2 寸进光插入筒 ---
-BARREL_OD = 50.4           # 调焦座内径 50.8, 留 0.4 打印余量
-BARREL_LEN = 30.0
-GROOVE_AT, GROOVE_W, GROOVE_D = 22.0, 2.0, 0.5   # 顶丝槽 (距进光口位置, 宽, 深)
-FLANGE_OD, FLANGE_T = 58.0, 2.0                  # 止口法兰 (下方 45° 锥面, 免支撑)
+BARREL_OD = 50.4
+BARREL_LEN = 25.0
+GROOVE_AT, GROOVE_W, GROOVE_D = 17.0, 2.0, 0.5
+FLANGE_OD, FLANGE_T = 58.0, 2.0
 
 # --- 出光口 ---
-OUT_MODE = "m48"           # "m48": M48x0.75 外螺纹(接 2" 滤镜口/转接环) | "barrel": 2" 插入筒
+OUT_MODE = "m48"           # "m48" | "barrel"
 NECK_LEN = 8.0
-M48_MAJOR_D, M48_PITCH, M48_DEPTH = 47.7, 0.75, 0.45   # 外螺纹大径留 0.3 间隙
+M48_MAJOR_D, M48_PITCH, M48_DEPTH = 47.7, 0.75, 0.45
 
 # --- 镜片座 ---
-SHOULDER_AP_D = 24.0       # 出光端 B 镜后的通光孔
-SHOULDER_T = 1.5
-SPACERS = [10, 14, 18, 22, 26]   # 隔圈长度 (近似两镜间距)
-SPACER_AP_A, SPACER_AP_B = 35.0, 25.0   # 隔圈内锥孔直径 (A端 -> B端)
+SHOULDER_T = 2.0           # 平凸镜出光端挡肩厚度
+SHOULDER_AP_D = 37.0       # 挡肩通光孔 (平凸镜凸面从这里探出)
+B_OVERLAP = 0.6            # 负透镜单边被压住的宽度
+LIP_FAR_D = 30.0           # 隔圈内锥孔在平凸镜一侧的直径
 
 # --- 压圈 (M44x1) ---
 RING_T = 4.5
-RING_AP_D = 35.0
 RET_MINOR_D, RET_PITCH, RET_DEPTH, RET_CLR = 43.0, 1.0, 0.6, 0.3
 
-NTH = 180                  # 圆周分段
+NTH = 180
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stl")
 
 
@@ -65,7 +73,6 @@ def const(r):
 
 
 def thread(r0, depth, pitch):
-    """右旋螺纹: 半径 = r0(牙底) + depth * wave"""
     return lambda th, z: r0 + depth * wave(z / pitch - th / (2 * math.pi))
 
 
@@ -89,7 +96,6 @@ def add_rows(prof, z0, z1, fn, step):
 
 
 def tube(outer, inner):
-    """outer/inner: [(z, fn(theta,z)->r)], 首尾 z 必须一致。返回 (V, T) 封闭实体"""
     assert abs(outer[0][0] - inner[0][0]) < 1e-9
     assert abs(outer[-1][0] - inner[-1][0]) < 1e-9
     V, T = [], []
@@ -120,10 +126,8 @@ def tube(outer, inner):
                 T.append(t2)
     for j in range(NTH):
         j2 = (j + 1) % NTH
-        # 底面 (-z)
         T.append((O[0][j], I[0][j], O[0][j2]))
         T.append((O[0][j2], I[0][j], I[0][j2]))
-        # 顶面 (+z)
         T.append((O[-1][j], O[-1][j2], I[-1][j]))
         T.append((O[-1][j2], I[-1][j2], I[-1][j]))
     return V, T
@@ -174,33 +178,47 @@ def write_stl(path, V, T, name):
             f.write(struct.pack("<12fH", n[0] / m, n[1] / m, n[2] / m, *A, *B, *C, 0))
 
 
-# ======================= 零件 =======================
+# ======================= 尺寸推导 =======================
 R_IMIN = RET_MINOR_D / 2
 R_IMAJ = R_IMIN + RET_DEPTH
 R_EMAJ = R_IMAJ - RET_CLR
 R_EROOT = R_EMAJ - RET_DEPTH
+R_PLAIN = R_IMAJ + 0.2             # 进光端光孔 (压圈要能通过)
 R_A_SEAT = (LA_D + LENS_CLR) / 2
 R_B_SEAT = (LB_D + LENS_CLR) / 2
-R_SP = R_A_SEAT - 0.2          # 隔圈外半径, 能滑入 A 座
+R_SP = R_A_SEAT - 0.2
+R_B_AP = LB_D / 2 - B_OVERLAP      # 负透镜被压住后的通光半径
+R_AP_A = SHOULDER_AP_D / 2
+RC_A = (N_GLASS - 1.0) * FA        # 平凸镜凸面曲率半径
+
+
+def sag(R, r):
+    return R - math.sqrt(R * R - r * r)
+
+
+def sp_len(gap):
+    return gap + LB_T + 0.1        # 隔圈长 = 边缘间距 + 负透镜座深度
 
 
 def body_dims():
     RB, RF = BARREL_OD / 2, FLANGE_OD / 2
-    cone = RF - RB                                # 45° 锥
+    cone = RF - RB
     z_neck0 = BARREL_LEN + cone + FLANGE_T
-    cb = LB_T + 0.1                               # B 座深度
     L = z_neck0 + NECK_LEN
-    z_b_top = L - SHOULDER_T - cb                 # B 座顶 (隔圈从这里往进光口方向排)
-    z_thr_end = z_b_top - min(SPACERS) - LA_T + 0.5
-    ring_front_min = z_b_top - max(SPACERS) - LA_T - RING_T
-    return dict(RB=RB, RF=RF, cone=cone, z_neck0=z_neck0, cb=cb, L=L,
-                z_b_top=z_b_top, z_thr_end=z_thr_end, ring_front_min=ring_front_min)
+    z_sh = L - SHOULDER_T                       # 挡肩进光侧表面
+    sp_max, sp_min = sp_len(max(GAP_VARIANTS)), sp_len(min(GAP_VARIANTS))
+    z_t0 = z_sh - LA_T - sp_max - RING_T - 1.0
+    z_t1 = z_sh - LA_T - sp_min + 2.0
+    vertex_z = z_sh + sag(RC_A, R_AP_A)         # 平凸镜凸面顶点位置
+    return dict(RB=RB, RF=RF, cone=cone, z_neck0=z_neck0, L=L, z_sh=z_sh,
+                z_t0=z_t0, z_t1=z_t1, vertex_z=vertex_z)
 
 
+# ======================= 零件 =======================
 def make_body():
     d = body_dims()
     RB, RF, L = d["RB"], d["RF"], d["L"]
-    assert d["ring_front_min"] > 0.5, "压圈会伸出进光口, 请减小 SPACERS 最大值"
+    assert d["z_t0"] > 1.0, "进光端预留不足"
     O = [(0.0, const(RB - 1.0)), (1.0, const(RB)),
          (GROOVE_AT, const(RB)), (GROOVE_AT, const(RB - GROOVE_D)),
          (GROOVE_AT + GROOVE_W, const(RB - GROOVE_D)), (GROOVE_AT + GROOVE_W, const(RB)),
@@ -215,29 +233,33 @@ def make_body():
         O.append((d["z_neck0"], const(RB)))
         O.append((L, const(RB)))
 
-    I = []
-    add_rows(I, 0.0, d["z_thr_end"], thread(R_IMIN, RET_DEPTH, RET_PITCH), RET_PITCH / 10)
-    I += [(d["z_thr_end"], const(R_A_SEAT)),
-          (d["z_b_top"], const(R_A_SEAT)),
-          (d["z_b_top"], const(R_B_SEAT)),
-          (d["z_b_top"] + d["cb"], const(R_B_SEAT)),
-          (d["z_b_top"] + d["cb"], const(SHOULDER_AP_D / 2)),
-          (L, const(SHOULDER_AP_D / 2))]
+    I = [(0.0, const(R_PLAIN)), (d["z_t0"], const(R_PLAIN))]
+    add_rows(I, d["z_t0"], d["z_t1"], thread(R_IMIN, RET_DEPTH, RET_PITCH), RET_PITCH / 10)
+    I += [(d["z_t1"], const(R_A_SEAT)),
+          (d["z_sh"], const(R_A_SEAT)),
+          (d["z_sh"], const(R_AP_A)),
+          (L, const(R_AP_A))]
     return O, I
 
 
 def make_ring():
     O = []
     add_rows(O, 0.0, RING_T, thread(R_EROOT, RET_DEPTH, RET_PITCH), RET_PITCH / 10)
-    ra = RING_AP_D / 2
-    I = [(0.0, notched(ra, ra + 2.3, 4, 8)), (2.0, notched(ra, ra + 2.3, 4, 8)),
-         (2.0, const(ra)), (RING_T, const(ra))]
+    r0 = 17.0
+    nf = notched(r0, r0 + 2.6, 4, 8)
+    I = [(0.0, nf), (2.0, nf), (2.0, const(r0)),
+         (RING_T - 0.6, const(R_B_AP)), (RING_T, const(R_B_AP))]
     return O, I
 
 
-def make_spacer(S):
-    O = [(0.0, const(R_SP)), (float(S), const(R_SP))]
-    I = [(0.0, const(SPACER_AP_A / 2)), (float(S), const(SPACER_AP_B / 2))]
+def make_spacer(gap):
+    """z=0 为平凸镜一侧端面, z=L 为进光口一侧端面"""
+    S = sp_len(gap)
+    O = [(0.0, const(R_SP)), (S, const(R_SP))]
+    I = [(0.0, const(LIP_FAR_D / 2)),
+         (gap, const(R_B_AP)),             # 内锥孔: 平凸镜侧宽, 负透镜侧窄
+         (gap, const(R_B_SEAT)),           # 负透镜座
+         (S, const(R_B_SEAT))]
     return O, I
 
 
@@ -256,47 +278,42 @@ def make_coupon_m48():
     return O, I
 
 
-# ======================= 近轴估算 (仅供参考) =======================
-def paraxial(D0, S):
-    """D0: 无改正镜时 A 镜到焦点的距离; S: 两镜间距。忽略厚度和像差。"""
-    l1 = 1.0 / (1.0 / D0 + 1.0 / FA)
-    if l1 <= S:
-        return None
-    v = 1.0 / (l1 - S) + 1.0 / FB
-    if v <= 0:
-        return None
-    l2 = 1.0 / v
-    return l2, l2 * l1 / (D0 * (l1 - S))
-
-
 # ======================= 主程序 =======================
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     parts = {"body": make_body(), "ring": make_ring(),
              "coupon_m44_int": make_coupon_m44(), "coupon_m48_ext": make_coupon_m48()}
-    for s in SPACERS:
-        parts["spacer_%02d" % s] = make_spacer(s)
+    for g in GAP_VARIANTS:
+        parts["spacer_gap%.2f" % g] = make_spacer(g)
 
-    print("%-16s %9s %8s %10s  %s" % ("part", "tris", "bad_edge", "vol(mm3)", "file"))
+    # 清理 v1 遗留的旧隔圈
+    for fn in os.listdir(OUT_DIR):
+        if fn.startswith("spacer_") and not fn.startswith("spacer_gap"):
+            os.remove(os.path.join(OUT_DIR, fn))
+
+    print("%-20s %9s %8s %10s" % ("part", "tris", "bad_edge", "vol(mm3)"))
     for name, (O, I) in parts.items():
         V, T = tube(O, I)
         V, T = weld(V, T)
         bad, vol = check(V, T)
-        path = os.path.join(OUT_DIR, name + ".stl")
-        write_stl(path, V, T, "mpcc_" + name)
-        print("%-16s %9d %8d %10.0f  %s" % (name, len(T), bad, vol, path))
+        write_stl(os.path.join(OUT_DIR, name + ".stl"), V, T, "mpcc_" + name)
+        print("%-20s %9d %8d %10.0f" % (name, len(T), bad, vol))
 
     d = body_dims()
-    print("\n主体总长 %.1f mm, 插入筒 %.0f mm, 压圈最前位置 %.1f mm (>0 即不会伸出)" %
-          (d["L"], BARREL_LEN, d["ring_front_min"]))
-    print("近轴估算 (忽略厚度/像差, 仅供参考): 出光后焦距离 BFL(mm) / 焦比缩放系数")
-    print("%-8s" % "S\\D0" + "".join("%18s" % ("D0=%d" % x) for x in (80, 100, 130)))
-    for s in SPACERS:
-        row = "%-8d" % s
-        for D0 in (80, 100, 130):
-            r = paraxial(D0, s)
-            row += "%18s" % ("-" if r is None else "%.1f / x%.2f" % r)
-        print(row)
+    to_shoulder = BACK_FOCUS + (d["vertex_z"] - d["z_neck0"])
+    print("\n--- 尺寸核对 ---")
+    print("主体总长 %.1f mm; 平凸镜凸面顶点比出光端面%s %.2f mm" %
+          (d["L"], "多伸出" if d["vertex_z"] > d["L"] else "缩进", abs(d["vertex_z"] - d["L"])))
+    print("M48 台阶面(转接环拧到底的位置) -> 感光面 应为 %.1f mm" % to_shoulder)
+    print("  = 相机法兰距 %.1f + 延长筒/转接环 %.1f mm  (法兰距请按你的相机改 CAM_FLANGE)" %
+          (CAM_FLANGE, to_shoulder - CAM_FLANGE))
+    sagdiff = GAP_CENTER - GAP_EDGE
+    rb = LB_D / 2
+    rneg = (N_GLASS - 1) * abs(FB)
+    print("\n--- 数据一致性提示 ---")
+    print("帖子里中心-边缘间距差 %.2f mm; 若负透镜是平凹 f=-185, 凹面在 r=%.1f 处矢高仅约 %.2f mm" %
+          (sagdiff, rb, sag(rneg, rb)))
+    print("两者差距较大: 请与帖子网盘资料或你的镜片实测核对后再定稿 (隔圈已提供 ±0.5mm 备选)")
 
 
 if __name__ == "__main__":
