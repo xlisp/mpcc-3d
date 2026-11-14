@@ -8,7 +8,8 @@ MPCC_APSC_P1 替代件: ZWO ASI533MC + 1.25" 母口版  (纯 Python, 无第三�
   P2 (2" 镜筒) / P3 (隔圈) / 两片镜片 不变, 只把 P1 换成能接 ZWO 相机的版本。
 
 本件保留 (数值全部从原版 MPCC_APSC_P1.STL 读出, z 以进光端面为 0):
-  * 进光端 M46.x 内螺纹: 螺距 1.0, 牙顶 R23.12 / 牙底 R23.67, 长 5.0, 右旋, 相位与原版一致
+  * 进光端内螺纹: 螺距 1.0, 牙顶 R23.12 / 牙底 R23.67, 右旋, 相位与原版一致;
+    螺旋牙槽走满 4 圈后在 θ=0 平面处截止 (z'≈4.375), 之后是 R23.12 光孔 (P2 外螺纹在此停住, 与原版一致)
   * 压住平凸镜的平面台阶: z=5.0, 通光孔 R17.7 (镜片接触圆不变, 所以光学位置不变)
   * 外径 ø50.6
 
@@ -39,8 +40,9 @@ THR_R_CREST = 23.12             # 牙顶 (最靠近轴线)
 THR_R_ROOT = 23.67              # 牙底
 THR_CREST_FLAT = 0.20           # 牙顶平台宽 (占螺距的比例)
 THR_ROOT_FLAT = 0.10            # 牙底平台宽
-THR_CREST_Z0 = 0.875            # θ=0 处牙顶中心 z' (模 1 个螺距), 右旋
-THR_LEN = 5.0                   # 螺纹长度 = 压镜台阶所在 z'
+THR_ROOT_Z0 = 0.375             # θ=0 处第 0 圈牙槽(牙底)中心 z', 右旋
+THR_GROOVE_LAST = 3             # 牙槽只走到第 3 圈 (θ=360° 处, z'=4.375), 之后是 R23.12 光孔 = 螺纹止位 (与原版一致)
+THR_LEN = 5.0                   # 压镜台阶所在 z'
 THR_CLR = 0.0                   # 额外半径间隙: 打出来拧不进 P2 就加 0.05~0.1
 CLAMP_R = 17.7                  # 压镜孔半径 (保持不变!)
 BODY_R, BODY_LEN, CONE_LEN = 25.3, 7.8, 8.0
@@ -73,17 +75,20 @@ def const(r):
 
 
 def thread_in(th, z):
-    """内螺纹半径 r(θ,z): 牙顶 THR_R_CREST, 牙底 THR_R_ROOT, 梯形牙型, 右旋"""
-    p = (z - THR_CREST_Z0) / THR_PITCH - th / (2 * math.pi)
-    d = abs(p - round(p))                      # 到牙顶中心的距离 (螺距为单位, 0..0.5)
-    half = THR_CREST_FLAT / 2
+    """内螺纹半径 r(θ,z): 牙顶 THR_R_CREST, 牙底 THR_R_ROOT, 梯形牙型, 右旋, 牙槽有终点"""
+    q = (z - THR_ROOT_Z0) / THR_PITCH - th / (2 * math.pi)    # 牙槽中心在 q 为整数处
+    n = round(q)
+    if n > THR_GROOVE_LAST:                                   # 牙槽已终止 -> 光孔
+        return THR_R_CREST + THR_CLR
+    d = abs(q - n)                                            # 到牙槽中心的距离 (螺距为单位)
+    half = THR_ROOT_FLAT / 2
     flank = (1.0 - THR_CREST_FLAT - THR_ROOT_FLAT) / 2
     if d <= half:
-        t = 0.0
-    elif d >= half + flank:
         t = 1.0
+    elif d >= half + flank:
+        t = 0.0
     else:
-        t = (d - half) / flank
+        t = 1.0 - (d - half) / flank
     return THR_R_CREST + THR_CLR + (THR_R_ROOT - THR_R_CREST) * t
 
 
